@@ -1,6 +1,7 @@
 /**
  * WordPress dependencies
  */
+import { DangerousHTML } from '@wordpress/element';
 import { __ } from '@wordpress/i18n';
 import { withState } from '@wordpress/components';
 
@@ -70,6 +71,6 @@ export const settings = {
 	] ),
 
 	save( { attributes } ) {
-		return attributes.content;
+		return <DangerousHTML>{ attributes.content }</DangerousHTML>;
 	},
 };
