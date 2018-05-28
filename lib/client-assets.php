@@ -76,6 +76,8 @@ function gutenberg_register_scripts_and_styles() {
 	gutenberg_register_vendor_scripts();
 
 	// WordPress packages.
+	wp_register_script( 'wp-tinymce', includes_url( 'js/tinymce/' ) . 'wp-tinymce.php', array() );
+
 	wp_register_script(
 		'wp-dom-ready',
 		gutenberg_url( 'build/dom-ready/index.js' ),
@@ -114,9 +116,16 @@ function gutenberg_register_scripts_and_styles() {
 
 	// Editor Scripts.
 	wp_register_script(
+		'wp-deprecated',
+		gutenberg_url( 'build/deprecated/index.js' ),
+		array(),
+		filemtime( gutenberg_dir_path() . 'build/deprecated/index.js' ),
+		true
+	);
+	wp_register_script(
 		'wp-data',
 		gutenberg_url( 'build/data/index.js' ),
-		array( 'wp-element', 'wp-utils', 'wp-is-shallow-equal', 'lodash' ),
+		array( 'wp-deprecated', 'wp-element', 'wp-is-shallow-equal', 'lodash' ),
 		filemtime( gutenberg_dir_path() . 'build/data/index.js' ),
 		true
 	);
@@ -130,14 +139,14 @@ function gutenberg_register_scripts_and_styles() {
 	wp_register_script(
 		'wp-dom',
 		gutenberg_url( 'build/dom/index.js' ),
-		array( 'tinymce-latest', 'lodash' ),
+		array( 'wp-tinymce', 'lodash' ),
 		filemtime( gutenberg_dir_path() . 'build/dom/index.js' ),
 		true
 	);
 	wp_register_script(
 		'wp-utils',
 		gutenberg_url( 'build/utils/index.js' ),
-		array( 'lodash', 'wp-dom' ),
+		array( 'lodash', 'wp-deprecated', 'wp-dom' ),
 		filemtime( gutenberg_dir_path() . 'build/utils/index.js' ),
 		true
 	);
@@ -204,7 +213,7 @@ function gutenberg_register_scripts_and_styles() {
 	wp_register_script(
 		'wp-blocks',
 		gutenberg_url( 'build/blocks/index.js' ),
-		array( 'wp-dom', 'wp-element', 'wp-utils', 'wp-hooks', 'wp-i18n', 'shortcode', 'wp-data', 'lodash' ),
+		array( 'wp-deprecated', 'wp-dom', 'wp-element', 'wp-utils', 'wp-hooks', 'wp-i18n', 'shortcode', 'wp-data', 'lodash' ),
 		filemtime( gutenberg_dir_path() . 'build/blocks/index.js' ),
 		true
 	);
@@ -232,6 +241,7 @@ function gutenberg_register_scripts_and_styles() {
 			'wp-blocks',
 			'wp-components',
 			'wp-core-data',
+			'wp-deprecated',
 			'wp-element',
 			'wp-editor',
 			'wp-i18n',
@@ -325,13 +335,14 @@ function gutenberg_register_scripts_and_styles() {
 			'wp-core-data',
 			'wp-data',
 			'wp-date',
+			'wp-deprecated',
 			'wp-dom',
 			'wp-i18n',
 			'wp-element',
 			'wp-plugins',
 			'wp-utils',
 			'wp-viewport',
-			'tinymce-latest',
+			'wp-tinymce',
 			'tinymce-latest-lists',
 			'tinymce-latest-paste',
 			'tinymce-latest-table',
@@ -495,25 +506,21 @@ function gutenberg_register_vendor_scripts() {
 		'https://unpkg.com/moment@2.22.1/' . $moment_script,
 		array()
 	);
-	$tinymce_version = '4.7.2';
-	gutenberg_register_vendor_script(
-		'tinymce-latest',
-		'https://unpkg.com/tinymce@' . $tinymce_version . '/tinymce' . $suffix . '.js'
-	);
+	$tinymce_version = '4.7.11';
 	gutenberg_register_vendor_script(
 		'tinymce-latest-lists',
 		'https://unpkg.com/tinymce@' . $tinymce_version . '/plugins/lists/plugin' . $suffix . '.js',
-		array( 'tinymce-latest' )
+		array( 'wp-tinymce' )
 	);
 	gutenberg_register_vendor_script(
 		'tinymce-latest-paste',
 		'https://unpkg.com/tinymce@' . $tinymce_version . '/plugins/paste/plugin' . $suffix . '.js',
-		array( 'tinymce-latest' )
+		array( 'wp-tinymce' )
 	);
 	gutenberg_register_vendor_script(
 		'tinymce-latest-table',
 		'https://unpkg.com/tinymce@' . $tinymce_version . '/plugins/table/plugin' . $suffix . '.js',
-		array( 'tinymce-latest' )
+		array( 'wp-tinymce' )
 	);
 	gutenberg_register_vendor_script(
 		'lodash',
@@ -967,6 +974,15 @@ function gutenberg_editor_scripts_and_styles( $hook ) {
 		);
 	}
 
+	$max_upload_size = wp_max_upload_size();
+	if ( ! $max_upload_size ) {
+		$max_upload_size = 0;
+	}
+	// Initialize media settings.
+	wp_add_inline_script( 'wp-editor', 'window._wpMediaSettings = ' . wp_json_encode( array(
+		'maxUploadSize' => $max_upload_size,
+	) ), 'before' );
+
 	// Prepare Jed locale data.
 	$locale_data = gutenberg_get_jed_locale_data( 'gutenberg' );
 	wp_add_inline_script(
@@ -1026,9 +1042,18 @@ function gutenberg_editor_scripts_and_styles( $hook ) {
 	 */
 	$allowed_block_types = apply_filters( 'allowed_block_types', true, $post );
 
+	// Get all available templates for the post/page attributes meta-box.
+	// The "Default template" array element should only be added if the array is
+	// not empty so we do not trigger the template select element without any options
+	// besides the default value.
+	$available_templates = wp_get_theme()->get_page_templates( $post_to_edit['id'] );
+	$available_templates = ! empty( $available_templates ) ? array_merge( array(
+		'' => apply_filters( 'default_page_template_title', __( 'Default template', 'gutenberg' ), 'rest-api' ),
+	), $available_templates ) : $available_templates;
+
 	$editor_settings = array(
 		'alignWide'           => $align_wide || ! empty( $gutenberg_theme_support[0]['wide-images'] ), // Backcompat. Use `align-wide` outside of `gutenberg` array.
-		'availableTemplates'  => wp_get_theme()->get_page_templates( get_post( $post_to_edit['id'] ) ),
+		'availableTemplates'  => $available_templates,
 		'allowedBlockTypes'   => $allowed_block_types,
 		'disableCustomColors' => get_theme_support( 'disable-custom-colors' ),
 		'disablePostFormats'  => ! current_theme_supports( 'post-formats' ),
@@ -1052,7 +1077,7 @@ function gutenberg_editor_scripts_and_styles( $hook ) {
 	$script .= <<<JS
 		window._wpLoadGutenbergEditor = new Promise( function( resolve ) {
 			wp.api.init().then( function() {
-				wp.domReady.default( function() {
+				wp.domReady( function() {
 					resolve( wp.editPost.initializeEditor( 'editor', window._wpGutenbergPost, editorSettings ) );
 				} );
 			} );
@@ -1093,7 +1118,26 @@ JS;
  * Remove this in Gutenberg 3.1
  */
 function polyfill_blocks_module_in_scripts() {
+	global $post;
+
+	if ( ! is_admin() ) {
+		return;
+	}
+
+	if ( get_current_screen()->base !== 'post' ) {
+		return;
+	}
+
+	if ( isset( $_GET['classic-editor'] ) ) {
+		return;
+	}
+
+	if ( ! gutenberg_can_edit_post( $post ) ) {
+		return;
+	}
+
 	wp_enqueue_script( 'wp-editor' );
 }
 
 add_action( 'enqueue_block_editor_assets', 'polyfill_blocks_module_in_scripts', 9 );
+add_action( 'enqueue_block_assets', 'polyfill_blocks_module_in_scripts', 9 );
