@@ -10,7 +10,6 @@ import { flowRight, without, mapValues, overEvery } from 'lodash';
 import {
 	Component,
 	compose,
-	createElement,
 	createHigherOrderComponent,
 	pure,
 } from '@wordpress/element';
@@ -21,7 +20,7 @@ import isShallowEqual from '@wordpress/is-shallow-equal';
  */
 import registerDataStore from './store';
 
-export { loadAndPersist, withRehydration, withRehydratation } from './persist';
+export { loadAndPersist, withRehydration } from './persist';
 
 /**
  * Module constants
@@ -267,76 +266,100 @@ export function dispatch( reducerKey ) {
  * @return {Component} Enhanced component with merged state data props.
  */
 export const withSelect = ( mapStateToProps ) => createHigherOrderComponent( ( WrappedComponent ) => {
+	/**
+	 * Default merge props. A constant value is used as the fallback since it
+	 * can be more efficiently shallow compared in case component is repeatedly
+ 	 * rendered without its own merge props.
+	 *
+	 * @type {Object}
+	 */
+	const DEFAULT_MERGE_PROPS = {};
+
+	/**
+	 * Given a props object, returns the next merge props by mapStateToProps.
+	 *
+	 * @param {Object} props Props to pass as argument to mapStateToProps.
+	 *
+	 * @return {Object} Props to merge into rendered wrapped element.
+	 */
+	function getNextMergeProps( props ) {
+		return (
+			mapStateToProps( select, props ) ||
+			DEFAULT_MERGE_PROPS
+		);
+	}
+
 	return class ComponentWithSelect extends Component {
-		constructor() {
-			super( ...arguments );
+		constructor( props ) {
+			super( props );
 
-			this.runSelection = this.runSelection.bind( this );
-
-			/**
-			 * Boolean tracking known render conditions (own props or merged
-			 * props update) for `shouldComponentUpdate`.
-			 *
-			 * @type {boolean}
-			 */
-			this.shouldComponentUpdate = false;
-
-			this.state = {};
-		}
-
-		shouldComponentUpdate() {
-			return this.shouldComponentUpdate;
-		}
-
-		componentWillMount() {
 			this.subscribe();
 
-			// Populate initial state.
-			this.runSelection();
+			this.mergeProps = getNextMergeProps( props );
 		}
 
-		componentWillReceiveProps( nextProps ) {
-			if ( ! isShallowEqual( nextProps, this.props ) ) {
-				this.runSelection( nextProps );
-				this.shouldComponentUpdate = true;
-			}
+		componentDidMount() {
+			this.canRunSelection = true;
 		}
 
 		componentWillUnmount() {
+			this.canRunSelection = false;
 			this.unsubscribe();
+		}
 
-			// While above unsubscribe avoids future listener calls, callbacks
-			// are snapshotted before being invoked, so if unmounting occurs
-			// during a previous callback, we need to explicitly track and
-			// avoid the `runSelection` that is scheduled to occur.
-			this.isUnmounting = true;
+		shouldComponentUpdate( nextProps, nextState ) {
+			const hasPropsChanged = ! isShallowEqual( this.props, nextProps );
+
+			// Only render if props have changed or merge props have been updated
+			// from the store subscriber.
+			if ( this.state === nextState && ! hasPropsChanged ) {
+				return false;
+			}
+
+			// If merge props change as a result of the incoming props, they
+			// should be reflected as such in the upcoming render.
+			if ( hasPropsChanged ) {
+				const nextMergeProps = getNextMergeProps( nextProps );
+				if ( ! isShallowEqual( this.mergeProps, nextMergeProps ) ) {
+					// Side effects are typically discouraged in lifecycle methods, but
+					// this component is heavily used and this is the most performant
+					// code we've found thus far.
+					// Prior efforts to use `getDerivedStateFromProps` have demonstrated
+					// miserable performance.
+					this.mergeProps = nextMergeProps;
+				}
+			}
+
+			return true;
 		}
 
 		subscribe() {
-			this.unsubscribe = subscribe( this.runSelection );
-		}
+			this.unsubscribe = subscribe( () => {
+				if ( ! this.canRunSelection ) {
+					return;
+				}
 
-		runSelection( props = this.props ) {
-			if ( this.isUnmounting ) {
-				return;
-			}
+				const nextMergeProps = getNextMergeProps( this.props );
+				if ( isShallowEqual( this.mergeProps, nextMergeProps ) ) {
+					return;
+				}
 
-			const { mergeProps } = this.state;
-			const nextMergeProps = mapStateToProps( select, props ) || {};
+				this.mergeProps = nextMergeProps;
 
-			if ( ! isShallowEqual( nextMergeProps, mergeProps ) ) {
-				this.setState( {
-					mergeProps: nextMergeProps,
-				} );
-
-				this.shouldComponentUpdate = true;
-			}
+				// Schedule an update. Merge props are not assigned to state
+				// because derivation of merge props from incoming props occurs
+				// within shouldComponentUpdate, where setState is not allowed.
+				// setState is used here instead of forceUpdate because forceUpdate
+				// bypasses shouldComponentUpdate altogether, which isn't desireable
+				// if both state and props change within the same render.
+				// Unfortunately this requires that next merge props are generated
+				// twice.
+				this.setState( {} );
+			} );
 		}
 
 		render() {
-			this.shouldComponentUpdate = false;
-
-			return <WrappedComponent { ...this.props } { ...this.state.mergeProps } />;
+			return <WrappedComponent { ...this.props } { ...this.mergeProps } />;
 		}
 	};
 }, 'withSelect' );
@@ -358,18 +381,15 @@ export const withDispatch = ( mapDispatchToProps ) => createHigherOrderComponent
 		pure,
 		( WrappedComponent ) => {
 			return class ComponentWithDispatch extends Component {
-				constructor() {
+				constructor( props ) {
 					super( ...arguments );
 
 					this.proxyProps = {};
+					this.setProxyProps( props );
 				}
 
-				componentWillMount() {
+				componentDidUpdate() {
 					this.setProxyProps( this.props );
-				}
-
-				componentWillUpdate( nextProps ) {
-					this.setProxyProps( nextProps );
 				}
 
 				proxyDispatch( propName, ...args ) {
